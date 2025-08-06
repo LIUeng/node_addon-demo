@@ -12,6 +12,7 @@ jobs:
   build:
     runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
         node-version: [18, 20, 22]
@@ -29,11 +30,39 @@ jobs:
     - name: Install dependencies
       run: npm ci
     
+    - name: Setup MSBuild (Windows)
+      if: runner.os == 'Windows'
+      uses: microsoft/setup-msbuild@v2
+    
     - name: Install build tools (Windows)
       if: runner.os == 'Windows'
+      shell: powershell
       run: |
-        npm install --global windows-build-tools
-        npm config set msvs_version 2019
+        # Use GitHub Actions pre-installed Visual Studio
+        $vsPath = "${env:ProgramFiles}\Microsoft Visual Studio\2022\Enterprise"
+        if (-not (Test-Path $vsPath)) {
+          $vsPath = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\2022\BuildTools"
+        }
+        
+        if (Test-Path $vsPath) {
+          Write-Host "Using pre-installed Visual Studio at: $vsPath"
+        } else {
+          Write-Host "Installing Visual Studio Build Tools..."
+          # Install minimal required components
+          choco install visualstudio2022buildtools --package-parameters "--add Microsoft.VisualStudio.Workload.VCTools --passive" --timeout 900
+        }
+        
+        # Set npm configuration
+        npm config set msvs_version 2022
+        npm config set python python3
+        
+        # Verify tools are available
+        try {
+          where cl
+          Write-Host "Build tools verification successful"
+        } catch {
+          Write-Host "Warning: cl.exe not found in PATH"
+        }
     
     - name: Install build tools (Linux)
       if: runner.os == 'Linux'
@@ -41,11 +70,69 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y build-essential
     
-    - name: Build native addon
-      run: npm run build
+    - name: Build native addon (Unix)
+      if: runner.os != 'Windows'
+      run: |
+        # First attempt
+        if ! npm run build; then
+          echo "First build attempt failed, cleaning and retrying..."
+          # Clean build directory
+          rm -rf build node_modules/.cache
+          # Reinstall dependencies
+          npm ci
+          # Retry build
+          npm run build
+        fi
     
-    - name: Test addon
-      run: npm test
+    - name: Build native addon (Windows)
+      if: runner.os == 'Windows'
+      shell: powershell
+      run: |
+        # First attempt
+        try {
+          npm run build
+          Write-Host "Build successful on first attempt"
+        } catch {
+          Write-Host "First build attempt failed, cleaning and retrying..."
+          # Clean build directory
+          if (Test-Path "build") { Remove-Item -Recurse -Force "build" }
+          if (Test-Path "node_modules\.cache") { Remove-Item -Recurse -Force "node_modules\.cache" }
+          # Reinstall dependencies
+          npm ci
+          # Retry build
+          npm run build
+        }
+    
+    - name: Test addon (Unix)
+      if: runner.os != 'Windows'
+      run: |
+        # Check if addon was built successfully
+        if [ -f "build/Release/addon.node" ]; then
+          echo "Addon built successfully, running tests..."
+          npm test
+        else
+          echo "Warning: addon.node not found, skipping tests"
+          ls -la build/Release/ || echo "build/Release directory not found"
+          exit 1
+        fi
+    
+    - name: Test addon (Windows)
+      if: runner.os == 'Windows'
+      shell: powershell
+      run: |
+        # Check if addon was built successfully
+        if (Test-Path "build\Release\addon.node") {
+          Write-Host "Addon built successfully, running tests..."
+          npm test
+        } else {
+          Write-Host "Warning: addon.node not found, skipping tests"
+          if (Test-Path "build\Release") {
+            Get-ChildItem "build\Release" -Force
+          } else {
+            Write-Host "build/Release directory not found"
+          }
+          exit 1
+        }
     
     - name: Upload build artifacts
       uses: actions/upload-artifact@v4

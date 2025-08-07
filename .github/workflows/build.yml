@@ -52,9 +52,10 @@ jobs:
           choco install visualstudio2022buildtools --package-parameters "--add Microsoft.VisualStudio.Workload.VCTools --passive" --timeout 900
         }
         
-        # Set npm configuration
-        npm config set msvs_version 2022
-        npm config set python python3
+        # Set environment variables for node-gyp
+        $env:GYP_MSVS_VERSION = "2022"
+        $env:npm_config_msvs_version = "2022"
+        $env:npm_config_python = "python3"
         
         # Verify tools are available
         try {
